@@ -70,6 +70,17 @@ If rebase conflicts occur:
 - If a conflict is in a file you did not modify, abort and ask the user.
 - Never force push.
 
+## Fork and Remotes
+
+This clone is a fork of `earendil-works/pi`, managed as `cmdruid/pi` on GitHub, and doubles as the local harness build tree (`~/.local/bin/pi` bundles `packages/coding-agent/dist/bundle/cli.js` from this checkout).
+
+- `origin` = `https://github.com/cmdruid/pi.git` (the fork)
+- `upstream` = `https://github.com/earendil-works/pi.git` (fetch-only, never pushed to)
+- `main` is the harness branch, pinned to an explicit upstream base + local patch commits. It does NOT track `upstream/main`; never auto-rebase it onto upstream. Current pin: upstream `400d6905c` (2026-09-09), the base of the running bundle.
+- Adopting a new upstream base is deliberate: pick a tag or commit, rebase the local patch commits onto it (`git rebase --onto <new-base> <old-base> main`), verify `npm run check`, rebuild the bundle (`npm run build` in `packages/coding-agent`), then `git push --force-with-lease origin main` (scoped to the fork's `main`; does not waive the no-force-push rule for shared or upstream branches).
+- `pi-refresh` in `~/.bashrc` only reports what changed upstream (new tags/commits since the pin); it never moves `main`.
+- PRs to upstream: cut a branch from fresh `upstream/main` (never from `main`), push to `origin`, then `gh pr create --repo earendil-works/pi`. PR branches stay on their cut base even if the `main` pin moves.
+
 ## Issues and PRs
 
 See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
