@@ -72,7 +72,7 @@ If rebase conflicts occur:
 
 ## Fork and Remotes
 
-This clone is a fork of `earendil-works/pi`, managed as `cmdruid/pi` on GitHub, and doubles as the local harness build tree (`~/.local/bin/pi` bundles `packages/coding-agent/dist/bundle/cli.js` from this checkout).
+This clone is a fork of `earendil-works/pi`, managed as `cmdruid/pi` on GitHub, and doubles as the local harness build tree (`~/.local/bin/pi` bundles `packages/coding-agent/dist/bundle/cli.js` from this checkout). It lives at `repos/pi` in the `~/Projects/pi-agent` super-project as a **submodule** (no branch tracking): super-project commits pin this commit as the adoption record, so bump the pointer there after any change to `main` (workflow in the pi-agent `README.md`).
 
 - `origin` = `https://github.com/cmdruid/pi.git` (the fork)
 - `upstream` = `https://github.com/earendil-works/pi.git` (fetch-only, never pushed to)
