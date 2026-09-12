@@ -356,6 +356,19 @@ export interface ExtensionContext {
 	 * handler is bound; false means the request is a no-op in this mode.
 	 */
 	requestReload(options?: { followUp?: string }): boolean;
+	/**
+	 * Request a deferred `/new` (new JSONL). Coalesced; runs once the current
+	 * agent run has fully settled, never mid-turn. Pass options.followUp to
+	 * submit a user turn on the replacement session. Returns whether a real
+	 * new-session handler is bound; false means the request is a no-op.
+	 */
+	requestNewSession(options?: { followUp?: string }): boolean;
+	/**
+	 * Origin of the user prompt that started this agent run.
+	 * `interactive` = typed in the TUI; `extension` = sendUserMessage/follow-up
+	 * (goal/wake/job); `rpc` = RPC inject.
+	 */
+	readonly inputSource: InputSource;
 }
 
 /**

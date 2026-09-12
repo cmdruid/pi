@@ -295,6 +295,10 @@ export class ExtensionRunner {
 	private reloadBound = false;
 	private reloadRequested = false;
 	private reloadFollowUp: string | undefined;
+	private newSessionBound = false;
+	private newSessionRequested = false;
+	private newSessionFollowUp: string | undefined;
+	private lastInputSource: InputSource = "interactive";
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
@@ -426,6 +430,7 @@ export class ExtensionRunner {
 			this.switchSessionHandler = actions.switchSession;
 			this.reloadHandler = actions.reload;
 			this.reloadBound = true;
+			this.newSessionBound = true;
 			return;
 		}
 
@@ -436,6 +441,7 @@ export class ExtensionRunner {
 		this.switchSessionHandler = async () => ({ cancelled: false });
 		this.reloadHandler = async () => {};
 		this.reloadBound = false;
+		this.newSessionBound = false;
 	}
 
 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
@@ -635,6 +641,67 @@ export class ExtensionRunner {
 		await this.reloadHandler(followUp);
 	}
 
+	setLastInputSource(source: InputSource): void {
+		this.lastInputSource = source;
+	}
+
+	getLastInputSource(): InputSource {
+		return this.lastInputSource;
+	}
+
+	/**
+	 * Request a deferred `/new`. Coalesced; runs at agent settle.
+	 * Returns whether a real new-session handler is bound.
+	 */
+	requestExtensionNewSession(followUp?: string): boolean {
+		if (!this.newSessionBound) return false;
+		this.newSessionRequested = true;
+		if (followUp?.trim()) this.newSessionFollowUp = followUp.trim();
+		else this.newSessionFollowUp = undefined;
+		return true;
+	}
+
+	hasPendingNewSession(): boolean {
+		return this.newSessionRequested && this.newSessionBound;
+	}
+
+	/**
+	 * Run the bound new-session handler if requested. Returns true if a swap
+	 * was attempted (caller should skip emitting agent_settled on the old session).
+	 */
+	async consumePendingNewSession(): Promise<boolean> {
+		if (!this.newSessionRequested || !this.newSessionBound) {
+			this.newSessionRequested = false;
+			this.newSessionFollowUp = undefined;
+			return false;
+		}
+		this.newSessionRequested = false;
+		const followUp = this.newSessionFollowUp;
+		this.newSessionFollowUp = undefined;
+		this.reloadRequested = false;
+		this.reloadFollowUp = undefined;
+		const parent = this.sessionManager.getSessionFile();
+		try {
+			const result = await this.newSessionHandler({
+				parentSession: parent,
+				withSession: async (ctx) => {
+					if (!followUp) return;
+					// Fire-and-forget like reload follow-up; do not nest the
+					// successor turn inside this settle.
+					void ctx.sendUserMessage(followUp, { deliverAs: "followUp" });
+				},
+			});
+			if (result.cancelled) {
+				delete (globalThis as { __piRefreshInherit?: unknown }).__piRefreshInherit;
+				return false;
+			}
+			return true;
+		} catch (err) {
+			delete (globalThis as { __piRefreshInherit?: unknown }).__piRefreshInherit;
+			throw err;
+		}
+	}
+
 	onError(listener: ExtensionErrorListener): () => void {
 		this.errorListeners.add(listener);
 		return () => this.errorListeners.delete(listener);
@@ -810,6 +877,14 @@ export class ExtensionRunner {
 			requestReload: (options) => {
 				runner.assertActive();
 				return runner.requestExtensionReload(options?.followUp);
+			},
+			requestNewSession: (options) => {
+				runner.assertActive();
+				return runner.requestExtensionNewSession(options?.followUp);
+			},
+			get inputSource() {
+				runner.assertActive();
+				return runner.getLastInputSource();
 			},
 			hasPendingMessages: () => {
 				runner.assertActive();

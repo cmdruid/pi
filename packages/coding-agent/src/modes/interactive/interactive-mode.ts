@@ -2032,6 +2032,7 @@ export class InteractiveMode {
 		const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
 		if (shortcuts.size === 0) return;
 
+		const sessionHost = this;
 		// Create a context for shortcut handlers
 		const createContext = (): ExtensionContext => ({
 			ui: this.createExtensionUIContext(),
@@ -2055,6 +2056,12 @@ export class InteractiveMode {
 			},
 			requestReload: (options) => {
 				return this.session.extensionRunner.requestExtensionReload(options?.followUp);
+			},
+			requestNewSession: (options) => {
+				return this.session.extensionRunner.requestExtensionNewSession(options?.followUp);
+			},
+			get inputSource() {
+				return sessionHost.session.extensionRunner.getLastInputSource();
 			},
 			getContextUsage: () => this.session.getContextUsage(),
 			compact: (options) => {

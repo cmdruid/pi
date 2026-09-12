@@ -625,6 +625,16 @@ export class AgentSession {
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
 		try {
+			try {
+				const swapped = await this._extensionRunner.consumePendingNewSession();
+				if (swapped) return;
+			} catch (err) {
+				this._extensionRunner.emitError({
+					extensionPath: "session-refresh",
+					event: "agent_settled",
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 			try {
@@ -1205,10 +1215,12 @@ export class AgentSession {
 			}
 
 			// Emit input event for extension interception (before skill/template expansion)
+			const inputSource = options?.source ?? "interactive";
+			this._extensionRunner.setLastInputSource(inputSource);
 			const processedInput = await this._runInputHandlers(
 				text,
 				options?.images,
-				options?.source ?? "interactive",
+				inputSource,
 				this.isStreaming ? options?.streamingBehavior : undefined,
 			);
 			if (!processedInput) {
