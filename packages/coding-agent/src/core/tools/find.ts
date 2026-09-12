@@ -5,6 +5,7 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
+import { findZeroHitMessage, formatFindListing, normalizeFindPattern } from "./find-pattern.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { findRenderers } from "./renderers/find.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -23,22 +24,24 @@ export function relativizeFindResultPath(
 	return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
 
+export { findZeroHitMessage, formatFindListing, normalizeFindPattern } from "./find-pattern.ts";
+
 const findSchema = Type.Object({
 	pattern: Type.String({
-		description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
+		description: "Glob or basename, e.g. 'tsconfig.json', '*.ts', or 'src/**/*.spec.ts'. Not content search.",
 	}),
 	path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
+	limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 50)" })),
 });
 
 export const findToolSystemPromptContribution = {
-	snippet: "Find files by glob pattern (respects .gitignore)",
-	guidelines: [],
+	snippet: "Find files by glob or basename (gitignore-aware). Not content search (that is grep).",
+	guidelines: ["Filename search. Basenames match anywhere. Path globs like src/**/*.ts work. Content search is grep."],
 } as const;
 
 export type FindToolInput = Static<typeof findSchema>;
 
-const DEFAULT_LIMIT = 1000;
+const DEFAULT_LIMIT = 50;
 
 export interface FindToolDetails {
 	truncation?: TruncationResult;
@@ -75,7 +78,7 @@ export function createFindToolDefinition(
 	return {
 		name: "find",
 		label: "find",
-		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+		description: `Find files by glob or basename (gitignore-aware). Not content search. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		promptSnippet: findToolSystemPromptContribution.snippet,
 		parameters: findSchema,
 		async execute(
@@ -133,7 +136,7 @@ export function createFindToolDefinition(
 							if (results.length === 0) {
 								settle(() =>
 									resolve({
-										content: [{ type: "text", text: "No files found matching pattern" }],
+										content: [{ type: "text", text: findZeroHitMessage(pattern) }],
 										details: undefined,
 									}),
 								);
@@ -143,7 +146,7 @@ export function createFindToolDefinition(
 							// Relativize paths against the search root for stable output.
 							const relativized = results.map((p) => relativizeFindResultPath(p, searchPath));
 							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
+							const rawOutput = formatFindListing(relativized);
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};
@@ -180,6 +183,7 @@ export function createFindToolDefinition(
 						}
 
 						const args: string[] = ["--glob", "--color=never", "--hidden"];
+						const normalized = normalizeFindPattern(pattern);
 
 						// fd normally ignores .gitignore outside git repos, so keep --no-require-git
 						// there. Inside repos, use fd's default git-aware behavior so parent
@@ -198,16 +202,9 @@ export function createFindToolDefinition(
 						if (!insideGitRepo) args.push("--no-require-git");
 						args.push("--max-results", String(effectiveLimit));
 
-						// fd --glob matches against the basename unless --full-path is set; in --full-path
-						// mode it matches against the absolute candidate path, so a path-containing
-						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let effectivePattern = pattern;
-						if (pattern.includes("/")) {
+						let effectivePattern = normalized.glob;
+						if (normalized.fullPath) {
 							args.push("--full-path");
-							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
-								effectivePattern = `**/${pattern}`;
-							}
-							// fd matches full paths using native separators on Windows.
 							if (process.platform === "win32")
 								effectivePattern = effectivePattern.replaceAll("/", String.raw`[/\\]`);
 						}
@@ -258,7 +255,7 @@ export function createFindToolDefinition(
 							if (!output) {
 								settle(() =>
 									resolve({
-										content: [{ type: "text", text: "No files found matching pattern" }],
+										content: [{ type: "text", text: findZeroHitMessage(pattern) }],
 										details: undefined,
 									}),
 								);
@@ -273,7 +270,7 @@ export function createFindToolDefinition(
 							}
 
 							const resultLimitReached = relativized.length >= effectiveLimit;
-							const rawOutput = relativized.join("\n");
+							const rawOutput = formatFindListing(relativized);
 							const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 							let resultOutput = truncation.content;
 							const details: FindToolDetails = {};
