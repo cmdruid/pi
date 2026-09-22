@@ -359,12 +359,14 @@ export function formatSkillsForPrompt(skills: Skill[], fileReadTool: "read" | "b
 		return "";
 	}
 
+	// fileReadTool stays in the signature for callers. The catalog no longer
+	// tells the model to read or bash the skill file; the house skill tool does that.
+	void fileReadTool;
+
 	const lines = [
 		"\n\nThe following skills provide specialized instructions for specific tasks.",
-		fileReadTool === "read"
-			? "Use the read tool to load a skill's file when the task matches its description."
-			: "Use bash to load a skill's file when the task matches its description.",
-		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+		"When a skill matches, call the `skill` tool with action `load` and that skill's name. Do not `read` the <location> path.",
+		"When the loaded body names a script, call the `skill` tool with action `run`. Do not bash that path.",
 		"",
 		"<available_skills>",
 	];
