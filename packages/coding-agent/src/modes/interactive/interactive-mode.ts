@@ -3393,6 +3393,11 @@ export class InteractiveMode {
 				await this.checkShutdownRequested();
 				break;
 
+			case "session_tree":
+				this.rebuildChatFromMessages();
+				this.ui.requestRender();
+				break;
+
 			case "compaction_start": {
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(true);

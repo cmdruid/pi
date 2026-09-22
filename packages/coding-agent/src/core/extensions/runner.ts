@@ -321,6 +321,10 @@ export class ExtensionRunner {
 		this.modelRegistry = modelRegistry;
 	}
 
+	setCwd(cwd: string): void {
+		this.cwd = cwd;
+	}
+
 	bindCore(
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,

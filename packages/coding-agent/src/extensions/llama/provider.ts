@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { stream, streamSimple } from "@earendil-works/pi-ai/compat";
 import { LlamaClient, type LlamaModelInfo, llamaInferenceUrl, normalizeLlamaServerUrl } from "./client.ts";
+import { readSlotPin, wrapFetchWithSlotPin } from "./slot-pin.ts";
 
 export const LLAMA_PROVIDER_ID = "llama.cpp";
 export const DEFAULT_LLAMA_SERVER_URL = "http://127.0.0.1:8080";
@@ -172,8 +173,30 @@ export function createLlamaProvider(): LlamaProviderController {
 				},
 			});
 		},
-		stream: (model, context, options) => stream(model, context, options as ProviderStreamOptions | undefined),
-		streamSimple: (model, context, options) => streamSimple(model, context, options),
+		stream: (model, context, options) => {
+			const pin = readSlotPin();
+			const next = {
+				...(options as ProviderStreamOptions | undefined),
+				fetch: wrapFetchWithSlotPin((options as ProviderStreamOptions | undefined)?.fetch, pin),
+				samplingParams:
+					pin === undefined
+						? (options as ProviderStreamOptions | undefined)?.samplingParams
+						: {
+								...(options as ProviderStreamOptions | undefined)?.samplingParams,
+								id_slot: pin,
+							},
+			};
+			return stream(model, context, next);
+		},
+		streamSimple: (model, context, options) => {
+			const pin = readSlotPin();
+			const next = {
+				...options,
+				fetch: wrapFetchWithSlotPin(options?.fetch, pin),
+				samplingParams: pin === undefined ? options?.samplingParams : { ...options?.samplingParams, id_slot: pin },
+			};
+			return streamSimple(model, context, next);
+		},
 	};
 
 	return { provider, setCatalog };

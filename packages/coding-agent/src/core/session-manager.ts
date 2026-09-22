@@ -1010,6 +1010,10 @@ export class SessionManager {
 		return this.cwd;
 	}
 
+	setCwd(cwd: string): void {
+		this.cwd = resolvePath(cwd);
+	}
+
 	getSessionDir(): string {
 		return this.sessionDir;
 	}

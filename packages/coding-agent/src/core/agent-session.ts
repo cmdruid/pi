@@ -49,8 +49,10 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
+import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
+import { clearAgentLoopPin, setAgentLoopPin } from "./agent-loop-pin.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
@@ -66,6 +68,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
+import { isEmptyFailedAssistant } from "./empty-failed-assistant.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -84,6 +87,7 @@ import {
 	type SessionBeforeTreeResult,
 	type SessionCompactFailedEvent,
 	type SessionStartEvent,
+	type SessionTreeEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
 	type ToolExecutionEndEvent,
@@ -182,7 +186,8 @@ export type AgentSessionEvent =
 			reason: "manual" | "threshold" | "overflow";
 	  }
 	| { type: "summarization_retry_finished" }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| SessionTreeEvent;
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -403,6 +408,7 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+		this._pinAgentLoop();
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -695,6 +701,13 @@ export class AgentSession {
 					event.message.display,
 					event.message.details,
 				);
+			} else if (event.message.role === "assistant" && isEmptyFailedAssistant(event.message)) {
+				// issues-2: empty error/aborted assistants must not enter JSONL or the
+				// next LLM prefix (breaks LCP vs a restored GPU snapshot).
+				const msgs = this.agent.state.messages;
+				if (msgs.length > 0 && msgs[msgs.length - 1] === event.message) {
+					this.agent.state.messages = msgs.slice(0, -1);
+				}
 			} else if (
 				event.message.role === "user" ||
 				event.message.role === "assistant" ||
@@ -909,7 +922,81 @@ export class AgentSession {
 		);
 		this._disconnectFromAgent();
 		this._eventListeners = [];
+		clearAgentLoopPin(this.sessionId);
 		cleanupSessionResources(this.sessionId);
+	}
+
+	/** Live getters so stamp and summon see current tools and hooks without a reload. */
+	private _pinAgentLoop(): void {
+		const agent = this.agent;
+		const sessionId = this.sessionId;
+		setAgentLoopPin(sessionId, {
+			get sessionId() {
+				return agent.sessionId ?? sessionId;
+			},
+			get tools() {
+				return agent.state.tools.slice();
+			},
+			get streamFn() {
+				return agent.streamFunction;
+			},
+			get convertToLlm() {
+				return agent.convertToLlm;
+			},
+			get beforeToolCall() {
+				return agent.beforeToolCall;
+			},
+			get afterToolCall() {
+				return agent.afterToolCall;
+			},
+			get onPayload() {
+				return agent.onPayload;
+			},
+			get onResponse() {
+				return agent.onResponse;
+			},
+			get getApiKey() {
+				return agent.getApiKey;
+			},
+			get thinkingBudgets() {
+				return agent.thinkingBudgets;
+			},
+			get toolExecution() {
+				return agent.toolExecution;
+			},
+			get transport() {
+				return agent.transport;
+			},
+			get maxRetryDelayMs() {
+				return agent.maxRetryDelayMs;
+			},
+			navigateTree: (targetId: string, options?) => this.navigateTree(targetId, options),
+			continueFromLeaf: () => this.continueFromLeaf(),
+			setCwd: (cwd: string) => this.setCwd(cwd),
+			setSystemPromptOverride: (prompt: string | undefined) => this.setSystemPromptOverride(prompt),
+			getSystemPrompt: () => this.getSystemPrompt(),
+		});
+	}
+
+	setCwd(cwd: string): void {
+		const resolved = resolvePath(cwd);
+		this._cwd = resolved;
+		this.sessionManager.setCwd(resolved);
+		this._extensionRunner.setCwd(resolved);
+	}
+
+	setSystemPromptOverride(prompt: string | undefined): void {
+		if (prompt === undefined) {
+			this._systemPromptOverride = undefined;
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
+			return;
+		}
+		this._systemPromptOverride = prompt;
+		this.agent.state.systemPrompt = prompt;
+	}
+
+	getSystemPrompt(): string {
+		return this.agent.state.systemPrompt;
 	}
 
 	// =========================================================================
@@ -1125,11 +1212,15 @@ export class AgentSession {
 				await this.agent.continue();
 			}
 		} finally {
-			this._systemPromptOverride = undefined;
-			this._flushPendingBashMessages();
-			this._flushPendingCustomMessages();
-			await this._emitAgentSettled();
+			await this._finishAgentRun();
 		}
+	}
+
+	private async _finishAgentRun(): Promise<void> {
+		this._systemPromptOverride = undefined;
+		this._flushPendingBashMessages();
+		this._flushPendingCustomMessages();
+		await this._emitAgentSettled();
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -3152,6 +3243,30 @@ export class AgentSession {
 	 * @param options.label Label to attach to the branch summary entry
 	 * @returns Result with editorText (if user message) and cancelled status
 	 */
+	/**
+	 * Continue the agent loop from the current leaf without sending a new user/custom
+	 * message. Requires the leaf message role to be `user` or `toolResult`.
+	 */
+	async continueFromLeaf(): Promise<void> {
+		if (this.isStreaming) {
+			throw new Error("Wait for the current response to finish before navigating the session tree.");
+		}
+		if (this.isCompacting) {
+			throw new Error(
+				"Wait for the current compaction or tree navigation to finish before navigating the session tree.",
+			);
+		}
+		this._isAgentRunActive = true;
+		try {
+			await this.agent.continue();
+			while (await this._handlePostAgentRun()) {
+				await this.agent.continue();
+			}
+		} finally {
+			await this._finishAgentRun();
+		}
+	}
+
 	async navigateTree(
 		targetId: string,
 		options: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } = {},
@@ -3332,16 +3447,16 @@ export class AgentSession {
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 
-			// Emit session_tree event
-			await this._extensionRunner.emit({
+			// Emit session_tree to extensions and session subscribers (TUI rebuilds on this).
+			const treeEvent: SessionTreeEvent = {
 				type: "session_tree",
 				newLeafId: this.sessionManager.getLeafId(),
 				oldLeafId,
 				summaryEntry,
 				fromExtension: summaryText ? fromExtension : undefined,
-			});
-
-			// Emit to custom tools
+			};
+			await this._extensionRunner.emit(treeEvent);
+			this._emit(treeEvent);
 
 			return { editorText, cancelled: false, summaryEntry };
 		} finally {
